@@ -1,0 +1,12 @@
+# Secrets
+tokens.json
+state.json
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# OS
+.DS_Store
+Thumbs.db
