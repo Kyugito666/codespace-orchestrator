@@ -1,12 +1,31 @@
-# Secrets
+# Secrets - JANGAN COMMIT!
 tokens.json
 state.json
 
-# Rust
+# Rust build artifacts
 target/
 Cargo.lock
 **/*.rs.bk
+*.pdb
 
-# OS
+# OS specific
 .DS_Store
 Thumbs.db
+Desktop.ini
+*.lnk
+*~
+.directory
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.backup
+*~
