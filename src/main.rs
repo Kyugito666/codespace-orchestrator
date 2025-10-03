@@ -255,6 +255,10 @@ fn main() {
         
         println!("\nRunning for {:.1} hours", run_duration_hours);
         println!("Keep-alive every 3.5 hours ({} cycles)", keep_alive_cycles);
+        
+        // Delay 4 jam sebelum restart pertama (biar auto-start selesai)
+        println!("\nWaiting 4 hours (let auto-start complete)...");
+        thread::sleep(Duration::from_secs(4 * 3600));
         println!("Starting keep-alive loop...\n");
         
         // Step 5: Keep-alive loop
@@ -262,7 +266,7 @@ fn main() {
         let mut cycle = 1;
         
         while start_time.elapsed() < run_duration {
-            let elapsed_hours = start_time.elapsed().as_secs() / 3600;
+            let elapsed_hours = (start_time.elapsed().as_secs() + 4 * 3600) / 3600;
             let remaining_hours = (run_duration.as_secs() - start_time.elapsed().as_secs()) / 3600;
             
             println!("--------------------------------------------------");
