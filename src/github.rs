@@ -1,9 +1,9 @@
-// src/github.rs (Solusi Definitif dengan Login Shell)
+// src/github.rs
 
 use std::process::Command;
 use std::fmt;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 
 #[derive(Debug)]
 pub enum GHError {
@@ -51,53 +51,6 @@ pub fn get_username(token: &str) -> Result<String, GHError> {
     run_gh_command(token, &["api", "user", "--jq", ".login"])
 }
 
-fn stop_codespace(token: &str, name: &str) -> Result<(), GHError> {
-    println!("      Stopping '{}'...", name);
-    match run_gh_command(token, &["codespace", "stop", "-c", name]) {
-        Ok(_) => { 
-            println!("      Stopped"); 
-            thread::sleep(Duration::from_secs(5)); 
-            Ok(()) 
-        }
-        Err(e) => { 
-            eprintln!("      Warning while stopping: {}", e); 
-            thread::sleep(Duration::from_secs(3)); 
-            Ok(()) 
-        }
-    }
-}
-
-fn delete_codespace(token: &str, name: &str) -> Result<(), GHError> {
-    println!("      Deleting '{}'...", name);
-    for attempt in 1..=3 {
-        match run_gh_command(token, &["codespace", "delete", "-c", name, "--force"]) {
-            Ok(_) => { println!("      Deleted"); thread::sleep(Duration::from_secs(3)); return Ok(()); }
-            Err(_) => {
-                if attempt < 3 { eprintln!("      Retry {}/3", attempt); thread::sleep(Duration::from_secs(5)); } 
-                else { eprintln!("      Failed after 3 attempts, continue anyway"); return Ok(()); }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn wait_for_deletion(token: &str, repo: &str, timeout_secs: u64) -> Result<(), GHError> {
-    println!("      Waiting for old codespaces to be fully deleted...");
-    let start_time = Instant::now();
-    loop {
-        if start_time.elapsed().as_secs() >= timeout_secs {
-            return Err(GHError::CommandError("Timeout: Old codespaces were not deleted in time.".to_string()));
-        }
-        let list_output = run_gh_command(token, &["codespace", "list", "-r", repo, "-q", "."],)?;
-        if list_output.trim().is_empty() {
-            println!("      All old codespaces confirmed deleted.");
-            return Ok(());
-        }
-        println!("      Still deleting... checking again in 10s.");
-        thread::sleep(Duration::from_secs(10));
-    }
-}
-
 pub fn verify_codespace(token: &str, name: &str) -> Result<bool, GHError> {
     let state_check = run_gh_command(token, &["codespace", "view", "-c", name, "--json", "state", "-q", ".state"]);
     match state_check {
@@ -116,9 +69,6 @@ pub fn wait_and_run_startup_script(token: &str, name: &str) -> Result<(), GHErro
             Ok(output) if output.contains("ready") => {
                 println!("      SSH is ready. Executing auto-start script in a login shell...");
                 
-                // ==========================================================
-                // INI PERUBAHAN KUNCI
-                // ==========================================================
                 let script_path = "/workspaces/mawari-nexus-blueprint/auto-start.sh";
                 let exec_command = format!("bash -l -c 'bash {}'", script_path);
 
@@ -126,9 +76,6 @@ pub fn wait_and_run_startup_script(token: &str, name: &str) -> Result<(), GHErro
                     Ok(start_output) => {
                         println!("      Script execution successful.");
                         println!("      Output snippet: {}", start_output.lines().next().unwrap_or(""));
-                        
-                        // Cukup verifikasi bahwa perintah berhasil, tidak perlu cek file sinyal
-                        // karena keberhasilan eksekusi di login shell sudah cukup.
                         return Ok(());
                     },
                     Err(e) => {
@@ -150,45 +97,54 @@ pub fn wait_and_run_startup_script(token: &str, name: &str) -> Result<(), GHErro
     Err(GHError::CommandError(format!("Timeout: Failed to reliably start node in '{}' after multiple attempts.", name)))
 }
 
-pub fn nuke_and_create(token: &str, repo: &str) -> Result<(String, String), GHError> {
-    println!("  Scanning existing codespaces...");
+// ==========================================================
+// FUNGSI INI MENGGANTIKAN 'nuke_and_create'
+// ==========================================================
+pub fn find_or_create_codespaces(token: &str, repo: &str) -> Result<(String, String), GHError> {
+    println!("  Checking for existing codespaces...");
     
-    let list_output = run_gh_command(token, &["codespace", "list", "-r", repo, "--json", "name,state", "-q", ".[]"])?;
+    let mut mawari_name = String::new();
+    let mut nexus_name = String::new();
 
+    // 1. Coba cari codespace yang sudah ada berdasarkan display name
+    let list_output = run_gh_command(token, &["codespace", "list", "--json", "name,displayName", "-q", ".[]"])?;
     if !list_output.is_empty() {
-        let codespaces: Vec<&str> = list_output.lines().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        if !codespaces.is_empty() {
-            println!("  Found {} old codespace(s), cleaning...", codespaces.len());
-            for cs_json in codespaces {
-                if let (Some(name_start), Some(name_end)) = (cs_json.find("\"name\":\""), cs_json.find("\",\"state\"")) {
-                    let name = &cs_json[name_start + 8..name_end];
-                    let state = if cs_json.contains("\"state\":\"Available\"") || cs_json.contains("\"state\":\"Running\"") { "Running" } else { "Stopped" };
-                    println!("    Codespace: {} ({})", name, state);
-                    if state == "Running" { stop_codespace(token, name)?; }
-                    delete_codespace(token, name)?;
-                    thread::sleep(Duration::from_secs(2));
+        for line in list_output.lines() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                let display_name = json["displayName"].as_str().unwrap_or("");
+                let name = json["name"].as_str().unwrap_or("").to_string();
+
+                if display_name == "mawari-node" {
+                    mawari_name = name;
+                } else if display_name == "nexus-node" {
+                    nexus_name = name;
                 }
             }
-            println!("  Cleanup commands sent.");
-            wait_for_deletion(token, repo, 90)?;
         }
+    }
+
+    // 2. Jika mawari-node tidak ditemukan, buat baru.
+    if mawari_name.is_empty() {
+        println!("  'mawari-node' not found. Creating new one...");
+        let new_name = run_gh_command(token, &[ "codespace", "create", "-r", repo, "-m", "basicLinux32gb", "--display-name", "mawari-node", "--idle-timeout", "240m"])?;
+        if new_name.is_empty() { return Err(GHError::CommandError("Failed to create mawari-node".to_string())); }
+        mawari_name = new_name;
+        println!("     Created: {}", mawari_name);
     } else {
-        println!("  No old codespaces found");
+        println!("  Found existing 'mawari-node': {}", mawari_name);
     }
     
-    println!("\n  Creating new codespaces...");
-    
-    println!("    [1/2] Creating mawari-node (basicLinux32gb)...");
-    let mawari_name = run_gh_command(token, &[ "codespace", "create", "-r", repo, "-m", "basicLinux32gb", "--display-name", "mawari-node", "--idle-timeout", "240m", "--retention-period", "24h"])?;
-    if mawari_name.is_empty() { return Err(GHError::CommandError("Failed to create mawari-node".to_string())); }
-    println!("       Mawari: {}", mawari_name);
-    thread::sleep(Duration::from_secs(3));
-    
-    println!("    [2/2] Creating nexus-node (standardLinux32gb)...");
-    let nexus_name = run_gh_command(token, &["codespace", "create", "-r", repo, "-m", "standardLinux32gb", "--display-name", "nexus-node", "--idle-timeout", "240m", "--retention-period", "24h"])?;
-    if nexus_name.is_empty() { return Err(GHError::CommandError("Failed to create nexus-node".to_string())); }
-    println!("       Nexus: {}", nexus_name);
-    
+    // 3. Jika nexus-node tidak ditemukan, buat baru.
+    if nexus_name.is_empty() {
+        println!("  'nexus-node' not found. Creating new one...");
+        let new_name = run_gh_command(token, &["codespace", "create", "-r", repo, "-m", "standardLinux32gb", "--display-name", "nexus-node", "--idle-timeout", "240m"])?;
+        if new_name.is_empty() { return Err(GHError::CommandError("Failed to create nexus-node".to_string())); }
+        nexus_name = new_name;
+        println!("     Created: {}", nexus_name);
+    } else {
+        println!("  Found existing 'nexus-node': {}", nexus_name);
+    }
+
     println!("\n  Starting nodes via direct script execution...");
     wait_and_run_startup_script(token, &mawari_name)?;
     thread::sleep(Duration::from_secs(5));
