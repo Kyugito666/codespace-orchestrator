@@ -1,3 +1,5 @@
+// src/main.rs
+
 mod config;
 mod github;
 mod billing;
@@ -89,18 +91,20 @@ fn verify_current() {
 }
 
 fn restart_nodes(token: &str, mawari_name: &str, nexus_name: &str) {
+    let script_path = "/workspaces/mawari-nexus-blueprint/auto-start.sh";
+    let cmd = format!("bash -l -c 'bash {}'", script_path);
+
     println!("  Restarting Mawari: {}", mawari_name);
-    let cmd = "bash /workspaces/mawari-nexus-blueprint/auto-start.sh";
-    match github::ssh_command(token, mawari_name, cmd) {
-        Ok(_) => println!("    Restart sent"),
+    match github::ssh_command(token, mawari_name, &cmd) {
+        Ok(output) => println!("    Restart sent. Output: {}", output.lines().next().unwrap_or("")),
         Err(e) => eprintln!("    Warning: {}", e),
     }
     
     thread::sleep(Duration::from_secs(2));
     
     println!("  Restarting Nexus: {}", nexus_name);
-    match github::ssh_command(token, nexus_name, cmd) {
-        Ok(_) => println!("    Restart sent"),
+    match github::ssh_command(token, nexus_name, &cmd) {
+        Ok(output) => println!("    Restart sent. Output: {}", output.lines().next().unwrap_or("")),
         Err(e) => eprintln!("    Warning: {}", e),
     }
 }
@@ -130,7 +134,7 @@ fn main() {
     let repo_name = &args[1];
 
     println!("==================================================");
-    println!("   FULL AUTO ORCHESTRATOR");
+    println!("   FULL AUTO ORCHESTRATOR (PERSISTENT MODE)");
     println!("==================================================");
     
     println!("\nLoading tokens.json...");
@@ -161,7 +165,6 @@ fn main() {
         println!("Token #{} of {}", i + 1, config.tokens.len());
         println!("==================================================");
         
-        // Step 1: Verify token
         let username = match github::get_username(token) {
             Ok(u) => {
                 println!("Valid token for: @{}", u);
@@ -186,7 +189,6 @@ fn main() {
             }
         };
 
-        // Step 2: Check billing quota
         println!("\nChecking billing quota...");
         let billing = match billing::get_billing_info(token, &username) {
             Ok(b) => {
@@ -216,9 +218,11 @@ fn main() {
             continue;
         }
 
-        // Step 3: Deploy (nuke + create)
         println!("\nDeploying for @{}...", username);
-        let (mawari_name, nexus_name) = match github::nuke_and_create(token, repo_name) {
+        // ==========================================================
+        // INI PANGGILAN FUNGSI YANG DIPERBARUI
+        // ==========================================================
+        let (mawari_name, nexus_name) = match github::find_or_create_codespaces(token, repo_name) {
             Ok(names) => names,
             Err(e) => {
                 eprintln!("Deployment failed: {}", e);
@@ -243,54 +247,48 @@ fn main() {
         
         println!("State saved");
         
-        // Step 4: Calculate run duration
         let run_duration_hours = if billing.hours_remaining < 20.0 {
-            billing.hours_remaining - 0.5 // Leave 30min buffer
+            billing.hours_remaining - 0.5
         } else {
             20.0
         };
         
         let run_duration = Duration::from_secs((run_duration_hours * 3600.0) as u64);
-        let keep_alive_cycles = (run_duration.as_secs() / KEEP_ALIVE_INTERVAL.as_secs()) as u32;
         
         println!("\nRunning for {:.1} hours", run_duration_hours);
-        println!("Keep-alive every 3.5 hours ({} cycles)", keep_alive_cycles);
+        println!("Keep-alive every 3.5 hours");
         
-        // Delay 4 jam sebelum restart pertama (biar auto-start selesai)
-        println!("\nWaiting 4 hours (let auto-start complete)...");
-        thread::sleep(Duration::from_secs(4 * 3600));
-        println!("Starting keep-alive loop...\n");
+        println!("\nStarting keep-alive loop...\n");
         
-        // Step 5: Keep-alive loop
         let start_time = Instant::now();
         let mut cycle = 1;
         
         while start_time.elapsed() < run_duration {
-            let elapsed_hours = (start_time.elapsed().as_secs() + 4 * 3600) / 3600;
+            let remaining_duration = run_duration.saturating_sub(start_time.elapsed());
+            let sleep_duration = std::cmp::min(KEEP_ALIVE_INTERVAL, remaining_duration);
+
+            if sleep_duration.as_secs() > 60 {
+                 println!("\nNext keep-alive in {:.1}h...\n", sleep_duration.as_secs() as f32 / 3600.0);
+                 thread::sleep(sleep_duration);
+            } else {
+                 break;
+            }
+
+            if start_time.elapsed() >= run_duration {
+                break;
+            }
+            
+            let elapsed_hours = start_time.elapsed().as_secs() / 3600;
             let remaining_hours = (run_duration.as_secs() - start_time.elapsed().as_secs()) / 3600;
             
             println!("--------------------------------------------------");
-            println!("Keep-Alive Cycle #{} | Elapsed: {}h | Remaining: {}h", 
+            println!("Keep-Alive Cycle #{} | Elapsed: ~{}h | Remaining: ~{}h", 
                 cycle, elapsed_hours, remaining_hours);
             println!("--------------------------------------------------");
             
             restart_nodes(token, &mawari_name, &nexus_name);
             
             cycle += 1;
-            
-            // Calculate time to next cycle
-            let time_to_next = if start_time.elapsed() + KEEP_ALIVE_INTERVAL < run_duration {
-                KEEP_ALIVE_INTERVAL
-            } else {
-                run_duration.saturating_sub(start_time.elapsed())
-            };
-            
-            if time_to_next.as_secs() > 60 {
-                println!("\nSleeping for {:.1}h...\n", time_to_next.as_secs() as f32 / 3600.0);
-                thread::sleep(time_to_next);
-            } else {
-                break;
-            }
         }
         
         println!("\n==================================================");
