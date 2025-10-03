@@ -67,16 +67,27 @@ fn stop_codespace(token: &str, name: &str) -> Result<(), GHError> {
 
 fn delete_codespace(token: &str, name: &str) -> Result<(), GHError> {
     println!("      Deleting '{}'...", name);
-    match run_gh_command(token, &["codespace", "delete", name, "--force"]) {
-        Ok(_) => {
-            println!("      Deleted");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("      Error: {}", e);
-            Err(e)
+    
+    // Retry 3x
+    for attempt in 1..=3 {
+        match run_gh_command(token, &["codespace", "delete", name, "--force"]) {
+            Ok(_) => {
+                println!("      Deleted");
+                thread::sleep(Duration::from_secs(3));
+                return Ok(());
+            }
+            Err(e) => {
+                if attempt < 3 {
+                    eprintln!("      Retry {}/3", attempt);
+                    thread::sleep(Duration::from_secs(5));
+                } else {
+                    eprintln!("      Failed after 3 attempts, continue anyway");
+                    return Ok(());
+                }
+            }
         }
     }
+    Ok(())
 }
 
 pub fn verify_codespace(token: &str, name: &str) -> Result<bool, GHError> {
@@ -159,8 +170,8 @@ pub fn nuke_and_create(token: &str, repo: &str) -> Result<(String, String), GHEr
                 }
             }
             
-            println!("  Cleanup complete. Waiting 5s...");
-            thread::sleep(Duration::from_secs(5));
+            println!("  Cleanup complete. Waiting 10s for GitHub sync...");
+            thread::sleep(Duration::from_secs(10));
         }
     } else {
         println!("  No old codespaces found");
@@ -213,4 +224,8 @@ pub fn nuke_and_create(token: &str, repo: &str) -> Result<(String, String), GHEr
     wait_until_ready(token, &nexus_name, 3)?;
 
     Ok((mawari_name, nexus_name))
+}
+
+pub fn ssh_command(token: &str, codespace_name: &str, cmd: &str) -> Result<String, GHError> {
+    run_gh_command(token, &["codespace", "ssh", "-c", codespace_name, "--", cmd])
 }
