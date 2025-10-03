@@ -1,4 +1,5 @@
-// src/billing.rs - GitHub Codespaces billing quota checker
+// src/billing.rs (Final - Peringatan sudah diperbaiki)
+
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -31,7 +32,6 @@ pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, Stri
     let response = match run_gh_api(token, &endpoint) {
         Ok(r) => r,
         Err(_) => {
-            // Fallback: assume free tier
             return Ok(BillingInfo {
                 total_minutes_used: 0,
                 included_minutes: 120,
@@ -48,13 +48,8 @@ pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, Stri
     let total_minutes_used = json["total_minutes_used"].as_u64().unwrap_or(0) as u32;
     let included_minutes = json["included_minutes"].as_u64().unwrap_or(120) as u32;
     
-    let minutes_remaining = if total_minutes_used >= included_minutes {
-        0
-    } else {
-        included_minutes - total_minutes_used
-    };
+    let minutes_remaining = included_minutes.saturating_sub(total_minutes_used);
     
-    // Calculate hours for 2-core (2x multiplier)
     let hours_remaining = (minutes_remaining as f32) / 60.0 / 2.0;
     let is_quota_ok = hours_remaining >= 20.0;
     
@@ -68,8 +63,13 @@ pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, Stri
 }
 
 pub fn display_billing(billing: &BillingInfo, username: &str) {
-    println!("Billing @{}: Used {}m | Remaining {}m ({:.1}h available)", 
-        username, billing.total_minutes_used, billing.minutes_remaining, billing.hours_remaining);
+    println!("Billing @{}: Used {}m of {}m | Remaining {}m ({:.1}h available for 2-core)", 
+        username, 
+        billing.total_minutes_used, 
+        billing.included_minutes, 
+        billing.minutes_remaining, 
+        billing.hours_remaining
+    );
     
     if !billing.is_quota_ok {
         println!("   WARNING: Low quota (< 20h)");
