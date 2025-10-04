@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use std::env;
 
 const STATE_FILE: &str = "state.json";
-const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(3 * 3600 + 30 * 60); // 3.5 hours
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(3 * 3600 + 30 * 60); // 3.5 jam
 
+// ... (fungsi show_status, verify_current, dan restart_nodes tidak berubah) ...
 fn show_status() {
     println!("STATUS ORCHESTRATOR");
     println!("==========================================");
@@ -109,6 +110,7 @@ fn restart_nodes(token: &str, mawari_name: &str, nexus_name: &str) {
     }
 }
 
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     
@@ -125,16 +127,13 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Error: Nama repo belum dikasih!");
         eprintln!("Usage: cargo run -- username/nama-repo");
-        eprintln!("\nCommands:");
-        eprintln!("   cargo run -- status   -> Show status");
-        eprintln!("   cargo run -- verify   -> Verify nodes");
         return;
     }
     
     let repo_name = &args[1];
 
     println!("==================================================");
-    println!("   FULL AUTO ORCHESTRATOR (PERSISTENT MODE)");
+    println!("   FULL AUTO ORCHESTRATOR (NUKE & CREATE MODE)");
     println!("==================================================");
     
     println!("\nLoading tokens.json...");
@@ -190,27 +189,11 @@ fn main() {
         };
 
         println!("\nChecking billing quota...");
-        let billing = match billing::get_billing_info(token, &username) {
-            Ok(b) => {
-                billing::display_billing(&b, &username);
-                b
-            }
-            Err(e) => {
-                println!("   Cannot check billing: {}", e);
-                println!("   Assuming OK, continue...");
-                billing::BillingInfo {
-                    total_minutes_used: 0,
-                    included_minutes: 120,
-                    minutes_remaining: 120,
-                    hours_remaining: 60.0,
-                    is_quota_ok: true,
-                }
-            }
-        };
+        let billing = billing::get_billing_info(token, &username).unwrap();
+        billing::display_billing(&billing, &username);
 
         if !billing.is_quota_ok {
-            eprintln!("   Insufficient quota ({:.1}h < 20h required)", billing.hours_remaining);
-            eprintln!("   Switching to next account...\n");
+            eprintln!("   Kuota tidak cukup. Beralih ke akun berikutnya...\n");
             i = (i + 1) % config.tokens.len();
             state.current_account_index = i;
             config::save_state(STATE_FILE, &state).ok();
@@ -218,11 +201,7 @@ fn main() {
             continue;
         }
 
-        println!("\nDeploying for @{}...", username);
-        // ==========================================================
-        // INI PANGGILAN FUNGSI YANG DIPERBARUI
-        // ==========================================================
-        let (mawari_name, nexus_name) = match github::find_or_create_codespaces(token, repo_name) {
+        let (mawari_name, nexus_name) = match github::nuke_and_create(token, repo_name) {
             Ok(names) => names,
             Err(e) => {
                 eprintln!("Deployment failed: {}", e);
@@ -238,7 +217,6 @@ fn main() {
         println!("Account  : @{}", username);
         println!("Mawari   : {}", mawari_name);
         println!("Nexus    : {}", nexus_name);
-        println!("Quota    : {:.1}h remaining", billing.hours_remaining);
         
         state.current_account_index = i;
         state.current_mawari_name = mawari_name.clone();
@@ -247,12 +225,7 @@ fn main() {
         
         println!("State saved");
         
-        let run_duration_hours = if billing.hours_remaining < 20.0 {
-            billing.hours_remaining - 0.5
-        } else {
-            20.0
-        };
-        
+        let run_duration_hours = 20.0;
         let run_duration = Duration::from_secs((run_duration_hours * 3600.0) as u64);
         
         println!("\nRunning for {:.1} hours", run_duration_hours);
