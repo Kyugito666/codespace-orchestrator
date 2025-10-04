@@ -1,14 +1,26 @@
-// src/billing.rs (Final - Peringatan sudah diperbaiki)
+// src/billing.rs
 
 use std::process::Command;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct BillingInfo {
-    pub total_minutes_used: u32,
-    pub included_minutes: u32,
-    pub minutes_remaining: u32,
-    pub hours_remaining: f32,
+    pub total_core_hours_used: f32,
     pub is_quota_ok: bool,
+}
+
+// Struct baru untuk parsing JSON yang Anda berikan
+#[derive(Deserialize, Debug)]
+struct UsageItem {
+    product: String,
+    sku: String,
+    quantity: f32,
+}
+
+#[derive(Deserialize, Debug)]
+struct BillingReport {
+    #[serde(rename = "usageItems")]
+    usage_items: Vec<UsageItem>,
 }
 
 fn run_gh_api(token: &str, endpoint: &str) -> Result<String, String> {
@@ -27,52 +39,61 @@ fn run_gh_api(token: &str, endpoint: &str) -> Result<String, String> {
 }
 
 pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, String> {
-    let endpoint = format!("/users/{}/settings/billing/actions", username);
+    // Menggunakan endpoint baru yang valid
+    let endpoint = format!("/users/{}/settings/billing/usage", username);
     
     let response = match run_gh_api(token, &endpoint) {
         Ok(r) => r,
-        Err(_) => {
+        Err(e) => {
+            println!("   WARNING: Gagal menghubungi API billing ({}). Anggap kuota habis.", e.lines().next().unwrap_or("API error"));
             return Ok(BillingInfo {
-                total_minutes_used: 0,
-                included_minutes: 120,
-                minutes_remaining: 120,
-                hours_remaining: 60.0,
-                is_quota_ok: true,
+                total_core_hours_used: 999.0,
+                is_quota_ok: false,
             });
         }
     };
     
-    let json: serde_json::Value = serde_json::from_str(&response)
-        .map_err(|e| format!("Parse error: {}", e))?;
-    
-    let total_minutes_used = json["total_minutes_used"].as_u64().unwrap_or(0) as u32;
-    let included_minutes = json["included_minutes"].as_u64().unwrap_or(120) as u32;
-    
-    let minutes_remaining = included_minutes.saturating_sub(total_minutes_used);
-    
-    let hours_remaining = (minutes_remaining as f32) / 60.0 / 2.0;
-    let is_quota_ok = hours_remaining >= 20.0;
-    
+    // Coba parse format JSON 'usageItems'
+    if let Ok(report) = serde_json::from_str::<BillingReport>(&response) {
+        let mut total_core_hours_used = 0.0;
+
+        for item in report.usage_items {
+            if item.product == "codespaces" {
+                if item.sku.contains("compute 2-core") {
+                    total_core_hours_used += item.quantity * 2.0;
+                } else if item.sku.contains("compute 4-core") {
+                    total_core_hours_used += item.quantity * 4.0;
+                }
+            }
+        }
+        
+        // Asumsi kuota gratis standar GitHub adalah 120 core-hours
+        let included_core_hours = 120.0;
+        let is_quota_ok = total_core_hours_used < included_core_hours;
+        
+        return Ok(BillingInfo {
+            total_core_hours_used,
+            is_quota_ok,
+        });
+    }
+
+    // Jika parsing gagal, berarti formatnya tidak dikenal atau kosong.
+    // Kita ambil tindakan paling aman.
+    println!("   WARNING: Format data billing tidak dikenal atau kosong. Anggap kuota habis.");
     Ok(BillingInfo {
-        total_minutes_used,
-        included_minutes,
-        minutes_remaining,
-        hours_remaining,
-        is_quota_ok,
+        total_core_hours_used: 999.0,
+        is_quota_ok: false,
     })
 }
 
 pub fn display_billing(billing: &BillingInfo, username: &str) {
-    println!("Billing @{}: Used {}m of {}m | Remaining {}m ({:.1}h available for 2-core)", 
+    println!("Billing @{}: Used ~{:.1} of 120.0 core-hours", 
         username, 
-        billing.total_minutes_used, 
-        billing.included_minutes, 
-        billing.minutes_remaining, 
-        billing.hours_remaining
+        billing.total_core_hours_used
     );
     
     if !billing.is_quota_ok {
-        println!("   WARNING: Low quota (< 20h)");
+        println!("   WARNING: Kuota habis atau tidak dapat diverifikasi.");
     } else {
         println!("   Quota OK");
     }
