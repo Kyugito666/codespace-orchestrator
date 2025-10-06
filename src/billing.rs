@@ -6,10 +6,10 @@ use serde::Deserialize;
 #[derive(Debug, Clone)]
 pub struct BillingInfo {
     pub total_core_hours_used: f32,
+    pub hours_remaining: f32, // Field untuk menyimpan sisa jam
     pub is_quota_ok: bool,
 }
 
-// Struct baru untuk parsing JSON yang Anda berikan
 #[derive(Deserialize, Debug)]
 struct UsageItem {
     product: String,
@@ -30,7 +30,7 @@ fn run_gh_api(token: &str, endpoint: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to execute gh: {}", e))?;
 
-    if !output.status.success() {
+    if !output.status.success() { // <-- PERBAIKAN DI SINI
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(stderr.to_string());
     }
@@ -39,7 +39,6 @@ fn run_gh_api(token: &str, endpoint: &str) -> Result<String, String> {
 }
 
 pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, String> {
-    // Menggunakan endpoint baru yang valid
     let endpoint = format!("/users/{}/settings/billing/usage", username);
     
     let response = match run_gh_api(token, &endpoint) {
@@ -48,12 +47,12 @@ pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, Stri
             println!("   WARNING: Gagal menghubungi API billing ({}). Anggap kuota habis.", e.lines().next().unwrap_or("API error"));
             return Ok(BillingInfo {
                 total_core_hours_used: 999.0,
+                hours_remaining: 0.0,
                 is_quota_ok: false,
             });
         }
     };
     
-    // Coba parse format JSON 'usageItems'
     if let Ok(report) = serde_json::from_str::<BillingReport>(&response) {
         let mut total_core_hours_used = 0.0;
 
@@ -67,33 +66,39 @@ pub fn get_billing_info(token: &str, username: &str) -> Result<BillingInfo, Stri
             }
         }
         
-        // Asumsi kuota gratis standar GitHub adalah 120 core-hours
         let included_core_hours = 120.0;
-        let is_quota_ok = total_core_hours_used < included_core_hours;
+        let remaining_core_hours = included_core_hours - total_core_hours_used;
+        
+        // Kita menjalankan 1x 2-core dan 1x 4-core, total 6 core per jam.
+        let hours_remaining = (remaining_core_hours / 6.0).max(0.0);
+        
+        // Dianggap OK jika sisa waktu lebih dari 1 jam
+        let is_quota_ok = hours_remaining > 1.0;
         
         return Ok(BillingInfo {
             total_core_hours_used,
+            hours_remaining,
             is_quota_ok,
         });
     }
 
-    // Jika parsing gagal, berarti formatnya tidak dikenal atau kosong.
-    // Kita ambil tindakan paling aman.
     println!("   WARNING: Format data billing tidak dikenal atau kosong. Anggap kuota habis.");
     Ok(BillingInfo {
         total_core_hours_used: 999.0,
+        hours_remaining: 0.0,
         is_quota_ok: false,
     })
 }
 
 pub fn display_billing(billing: &BillingInfo, username: &str) {
-    println!("Billing @{}: Used ~{:.1} of 120.0 core-hours", 
+    println!("Billing @{}: Used ~{:.1} of 120.0 core-hours | Approx. {:.1}h remaining", 
         username, 
-        billing.total_core_hours_used
+        billing.total_core_hours_used,
+        billing.hours_remaining
     );
     
     if !billing.is_quota_ok {
-        println!("   WARNING: Kuota habis atau tidak dapat diverifikasi.");
+        println!("   WARNING: Kuota rendah (< 1h) atau habis.");
     } else {
         println!("   Quota OK");
     }
