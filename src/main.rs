@@ -11,7 +11,6 @@ use std::env;
 const STATE_FILE: &str = "state.json";
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(3 * 3600 + 30 * 60); // 3.5 jam
 
-// ... (fungsi show_status, verify_current, dan restart_nodes tidak berubah) ...
 fn show_status() {
     println!("STATUS ORCHESTRATOR");
     println!("==========================================");
@@ -133,7 +132,7 @@ fn main() {
     let repo_name = &args[1];
 
     println!("==================================================");
-    println!("   FULL AUTO ORCHESTRATOR (NUKE & CREATE MODE)");
+    println!("   FULL AUTO ORCHESTRATOR (INSPECT & REUSE MODE)");
     println!("==================================================");
     
     println!("\nLoading tokens.json...");
@@ -201,7 +200,7 @@ fn main() {
             continue;
         }
 
-        let (mawari_name, nexus_name) = match github::nuke_and_create(token, repo_name) {
+        let (mawari_name, nexus_name) = match github::ensure_healthy_codespaces(token, repo_name) {
             Ok(names) => names,
             Err(e) => {
                 eprintln!("Deployment failed: {}", e);
@@ -225,7 +224,8 @@ fn main() {
         
         println!("State saved");
         
-        let run_duration_hours = 20.0;
+        let run_duration_hours = (billing.hours_remaining - 0.5).max(0.0).min(20.0);
+
         let run_duration = Duration::from_secs((run_duration_hours * 3600.0) as u64);
         
         println!("\nRunning for {:.1} hours", run_duration_hours);
